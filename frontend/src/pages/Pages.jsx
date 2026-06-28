@@ -9,6 +9,7 @@ export function Tasks({ toast }) {
   const [modal, setModal] = useState(false);
   const [form, setForm] = useState({ title: '', priority: 'medium', due_date: '', notes: '' });
 
+  const [search, setSearch] = useState('');
   const load = () => api.get('/tasks').then(setTasks);
   useEffect(() => { load(); }, []);
 
@@ -24,8 +25,9 @@ export function Tasks({ toast }) {
 
   const del = async (id) => { await api.del(`/tasks/${id}`); toast('Deleted', 'error'); load(); };
 
+  const filtered = search ? tasks.filter(t => t.title.toLowerCase().includes(search.toLowerCase())) : tasks;
   const grouped = { todo: [], inprogress: [], done: [] };
-  tasks.forEach(t => { if (grouped[t.status]) grouped[t.status].push(t); });
+  filtered.forEach(t => { if (grouped[t.status]) grouped[t.status].push(t); });
 
   const priorityDot = { high: 'var(--red)', medium: 'var(--yellow)', low: 'var(--green)' };
 
@@ -36,6 +38,10 @@ export function Tasks({ toast }) {
         <button className="btn btn-primary" onClick={() => setModal(true)}><Plus size={14} /> Add Task</button>
       </div>
       <div className="page-body">
+        <div className="flex-center gap-12 mb-20" style={{ position: 'relative' }}>
+          <Search size={15} style={{ position: 'absolute', left: 12, color: 'var(--text3)' }} />
+          <input style={{ paddingLeft: 36 }} placeholder="Search tasks..." value={search} onChange={e => setSearch(e.target.value)} />
+        </div>
         <div className="grid grid-3" style={{ gap: 16 }}>
           {[['todo', 'To Do'], ['inprogress', 'In Progress'], ['done', 'Done']].map(([status, label]) => (
             <div key={status}>
@@ -440,7 +446,7 @@ export function Settings({ toast }) {
             <div style={{ background: 'var(--bg3)', borderRadius: 6, padding: '10px 14px', fontFamily: 'var(--mono)', fontSize: 12 }}>
               # Install Ollama from ollama.com<br />
               ollama pull llama3<br />
-              # Then restart AIOS
+              # Then restart EVA
             </div>
           </div>
         </div>

@@ -6,27 +6,22 @@ import { useToast } from './hooks/useToast.js';
 import { Dashboard } from './pages/Dashboard.jsx';
 import { Projects } from './pages/Projects.jsx';
 import { Content } from './pages/Content.jsx';
-import { Tasks, Ideas, Knowledge, Brief, Insights, Settings } from './pages/Pages.jsx';
+import { Tasks, Ideas, Knowledge, Insights, Settings } from './pages/Pages.jsx';
 
 export default function App() {
-  const [theme, setTheme] = useState(() => localStorage.getItem('aios-theme') || 'dark');
+  const [theme, setTheme] = useState(() => localStorage.getItem('eva-theme') || 'dark');
   const { toasts, toast } = useToast();
-
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
-    localStorage.setItem('aios-theme', theme);
+    localStorage.setItem('eva-theme', theme);
   }, [theme]);
-
-  const toggleTheme = () => setTheme(t => t === 'dark' ? 'light' : 'dark');
-
   return (
     <BrowserRouter>
       <div className="layout">
-        <Sidebar theme={theme} onThemeToggle={toggleTheme} />
+        <Sidebar theme={theme} onThemeToggle={() => setTheme(t => t === 'dark' ? 'light' : 'dark')} />
         <main className="main">
           <Routes>
             <Route path="/" element={<Dashboard />} />
-            <Route path="/brief" element={<Brief toast={toast} />} />
             <Route path="/insights" element={<Insights toast={toast} />} />
             <Route path="/projects" element={<Projects toast={toast} />} />
             <Route path="/tasks" element={<Tasks toast={toast} />} />
