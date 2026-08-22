@@ -56,7 +56,7 @@ function GenerateModal({ open, onClose, onGenerate }) {
 
 function ContentCard({ item, onStatus, onDelete, toast }) {
   const [expanded, setExpanded] = useState(false);
-  const hashtags = JSON.parse(item.hashtags || '[]');
+  const hashtags = Array.isArray(item.hashtags) ? item.hashtags : (() => { try { return JSON.parse(item.hashtags || '[]'); } catch { return []; } })();
   const copy = () => {
     const text = `${item.content}\n\n${hashtags.map(h => `#${h}`).join(' ')}`;
     navigator.clipboard.writeText(text);
@@ -68,7 +68,7 @@ function ContentCard({ item, onStatus, onDelete, toast }) {
       <div className="flex-between mb-8">
         <div className="flex-center gap-8">
           <span className={`badge badge-${platformColor[item.platform] || 'gray'}`}>{item.platform}</span>
-          <span className="badge badge-purple">{item.angle}</span>
+          <span className="badge badge-accent">{item.angle}</span>
           <span className={`badge badge-${STATUS_COLORS[item.status] || 'gray'}`}>{item.status}</span>
         </div>
         <div className="flex-center gap-8">
@@ -79,12 +79,12 @@ function ContentCard({ item, onStatus, onDelete, toast }) {
       {item.title && <div className="fw-500 mb-8" style={{ fontSize: 13 }}>{item.title}</div>}
       <div style={{ fontSize: 13, color: 'var(--text2)', lineHeight: 1.65, whiteSpace: 'pre-wrap' }}>
         {expanded ? item.content : item.content?.slice(0, 220)}
-        {!expanded && item.content?.length > 220 && <button onClick={() => setExpanded(true)} style={{ background: 'none', border: 'none', color: 'var(--accent2)', cursor: 'pointer', fontSize: 12 }}> ...more</button>}
-        {expanded && <button onClick={() => setExpanded(false)} style={{ background: 'none', border: 'none', color: 'var(--accent2)', cursor: 'pointer', fontSize: 12 }}> less</button>}
+        {!expanded && item.content?.length > 220 && <button onClick={() => setExpanded(true)} style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontSize: 12 }}> ...more</button>}
+        {expanded && <button onClick={() => setExpanded(false)} style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontSize: 12 }}> less</button>}
       </div>
       {hashtags.length > 0 && (
         <div className="flex-center gap-6 mt-8" style={{ flexWrap: 'wrap' }}>
-          {hashtags.map(h => <span key={h} style={{ fontSize: 11, color: 'var(--accent2)' }}>#{h}</span>)}
+          {hashtags.map(h => <span key={h} style={{ fontSize: 11, color: 'var(--accent)' }}>#{h}</span>)}
         </div>
       )}
       {item.cta && <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 6, fontStyle: 'italic' }}>{item.cta}</div>}

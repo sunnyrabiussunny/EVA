@@ -50,7 +50,7 @@ function AnalysisPanel({ result, onClose }) {
     <div className="card" style={{ border: `1px solid var(--${healthColor})`, marginTop: 12 }}>
       <div className="flex-between mb-12">
         <div className="flex-center gap-8">
-          <Brain size={15} style={{ color: 'var(--accent2)' }} />
+          <Brain size={15} style={{ color: 'var(--green)' }} />
           <span className="fw-600" style={{ fontSize: 13 }}>AI Analysis</span>
           <span className={`badge badge-${healthColor}`}>{result.health}</span>
         </div>
@@ -62,7 +62,7 @@ function AnalysisPanel({ result, onClose }) {
           <div className="text-sm fw-600 mb-8" style={{ color: 'var(--text)' }}>Next Actions</div>
           {result.next_actions.map((a, i) => (
             <div key={i} className="flex-center gap-8 mb-4">
-              <ChevronRight size={12} style={{ color: 'var(--accent2)', flexShrink: 0 }} />
+              <ChevronRight size={12} style={{ color: 'var(--green)', flexShrink: 0 }} />
               <span style={{ fontSize: 13 }}>{a}</span>
             </div>
           ))}
@@ -91,14 +91,19 @@ export function Projects({ toast }) {
   useEffect(() => { load(); }, []);
 
   const save = async (form) => {
-    if (editing) {
-      await api.put(`/projects/${editing.id}`, form);
-      toast('Project updated');
-    } else {
-      await api.post('/projects', form);
-      toast('Project created');
+    try {
+      if (editing) {
+        await api.put(`/projects/${editing.id}`, form);
+        toast('Project updated');
+      } else {
+        await api.post('/projects', form);
+        toast('Project created');
+      }
+      setModal(false); setEditing(null); load();
+    } catch (err) {
+      toast('Save failed: ' + err.message, 'error');
+      console.error('Project save error:', err);
     }
-    setModal(false); setEditing(null); load();
   };
 
   const del = async (id) => {

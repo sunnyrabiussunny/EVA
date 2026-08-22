@@ -15,7 +15,7 @@ function BriefSection({ brief, loading, onRefresh }) {
     <div className="card mb-24" style={{ background: 'linear-gradient(135deg, rgba(108,99,255,0.08), rgba(139,131,255,0.04))', border: '1px solid var(--accent)', position: 'relative' }}>
       <div className="flex-between mb-16">
         <div className="flex-center gap-10">
-          <Brain size={18} style={{ color: 'var(--accent2)' }} />
+          <Brain size={18} style={{ color: 'var(--accent)' }} />
           <div>
             <div style={{ fontSize: 16, fontWeight: 650 }}>{brief.greeting || 'Good morning!'}</div>
             {brief.yesterday_summary && <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 2 }}>{brief.yesterday_summary}</div>}
@@ -25,7 +25,7 @@ function BriefSection({ brief, loading, onRefresh }) {
       </div>
 
       {brief.focus && (
-        <div style={{ background: 'var(--accent-bg)', borderRadius: 8, padding: '10px 14px', marginBottom: 14, fontSize: 13, color: 'var(--accent2)', fontWeight: 500 }}>
+        <div style={{ background: 'var(--accent-bg)', borderRadius: 8, padding: '10px 14px', marginBottom: 14, fontSize: 13, color: 'var(--accent)', fontWeight: 500 }}>
           🎯 {brief.focus}
         </div>
       )}
@@ -36,7 +36,7 @@ function BriefSection({ brief, loading, onRefresh }) {
             <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: '0.6px', marginBottom: 8 }}>Today's Priorities</div>
             {brief.priorities.slice(0, 3).map((p, i) => (
               <div key={i} className="flex-center gap-8 mb-6">
-                <span style={{ fontSize: 10, fontFamily: 'var(--mono)', color: 'var(--accent2)', minWidth: 18 }}>0{i+1}</span>
+                <span style={{ fontSize: 10, fontFamily: 'var(--mono)', color: 'var(--accent)', minWidth: 18 }}>0{i+1}</span>
                 <span style={{ fontSize: 13 }}>{p}</span>
               </div>
             ))}
@@ -52,7 +52,7 @@ function BriefSection({ brief, loading, onRefresh }) {
           {brief.content_ready?.length > 0 && (
             <div>
               <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--green)', textTransform: 'uppercase', letterSpacing: '0.6px', marginBottom: 6 }}>Content Ready</div>
-              {brief.content_ready.map((c, i) => <div key={i} style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 4 }}>✓ {c}</div>)}
+              {brief.content_ready.map((c, i) => <div key={i} style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 4 }}>✓ {typeof c === 'string' ? c : ((c.platform ? c.platform + ': ' : '') + (c.title || 'Content'))}</div>)}
             </div>
           )}
         </div>

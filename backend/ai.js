@@ -1,98 +1,143 @@
 /**
- * AI Provider — auto-selects Claude API or Ollama
- * Priority: Claude API (if key set) → Ollama (if running) → mock
+ * EVA AI Provider — Ollama (offline) or Claude API
+ * Priority: Claude API (if key set) → Ollama → mock
  */
 
+const OLLAMA_URL   = process.env.OLLAMA_URL   || 'http://host.docker.internal:11434';
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'llama3.1:latest';
 const CLAUDE_MODEL = 'claude-sonnet-4-6';
-const OLLAMA_URL = process.env.OLLAMA_URL || 'http://host.docker.internal:11434';
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'llama3';
 
+// ── Claude API ────────────────────────────────────────────
 async function callClaude(prompt) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error('No Claude API key');
-
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01'
+      'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify({
       model: CLAUDE_MODEL,
       max_tokens: 1500,
-      messages: [{ role: 'user', content: prompt }]
-    })
+      messages: [{ role: 'user', content: prompt }],
+    }),
   });
-
-  if (!res.ok) throw new Error(`Claude API error: ${res.status}`);
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Claude ${res.status}: ${err.substring(0, 200)}`);
+  }
   const data = await res.json();
   return data.content[0].text;
 }
 
+// ── Ollama (/api/chat — works with all recent Ollama versions) ────────────────
 async function callOllama(prompt) {
-  const res = await fetch(`${OLLAMA_URL}/api/generate`, {
+  const url = `${OLLAMA_URL}/api/chat`;
+  console.log(`[EVA] Calling Ollama: ${url} model=${OLLAMA_MODEL}`);
+
+  const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: OLLAMA_MODEL, prompt, stream: false }),
-    signal: AbortSignal.timeout(60000)
+    body: JSON.stringify({
+      model:   OLLAMA_MODEL,
+      stream:  false,
+      messages: [
+        {
+          role: 'system',
+          content: 'You are EVA, an executive AI assistant. Respond ONLY with valid JSON. No markdown, no explanation, no preamble.',
+        },
+        { role: 'user', content: prompt },
+      ],
+      options: { temperature: 0.3, num_predict: 1200 },
+    }),
+    signal: AbortSignal.timeout(120000), // 2 min timeout for large models
   });
-  if (!res.ok) throw new Error(`Ollama error: ${res.status}`);
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Ollama ${res.status}: ${err.substring(0, 200)}`);
+  }
+
   const data = await res.json();
-  return data.response;
+  const text = data.message?.content || data.response || '';
+  console.log(`[EVA] Ollama response length: ${text.length} chars`);
+  return text;
 }
 
+// ── Mock (no AI configured) ───────────────────────────────
 function mockResponse(prompt) {
-  // Minimal mock so UI doesn't break without AI
-  if (prompt.includes('"type"')) {
+  if (prompt.includes('"type"') || prompt.includes('insights') || prompt.includes('Analyze')) {
     return JSON.stringify([{
       type: 'action',
-      title: 'Set up your AI provider',
-      body: 'Add ANTHROPIC_API_KEY to your .env file, or start Ollama locally. No AI provider is currently connected.',
-      priority: 'high'
+      title: 'Connect Ollama to EVA',
+      body: 'Ollama is running on this server but EVA cannot reach it. Check that OLLAMA_URL in docker-compose.yml points to the correct address and the model name matches (run: ollama list).',
+      priority: 'high',
     }]);
   }
-  return JSON.stringify({ error: 'No AI provider configured', hint: 'Add ANTHROPIC_API_KEY to .env or run Ollama locally' });
+  if (prompt.includes('brief') || prompt.includes('morning')) {
+    return JSON.stringify({
+      greeting: 'Good morning!',
+      focus: 'Connect Ollama to enable AI-powered briefs.',
+      priorities: ['Set up Ollama connection'],
+      yesterday_summary: 'No AI provider connected yet.',
+      warnings: ['Ollama not reachable — check OLLAMA_URL in .env'],
+      content_ready: [],
+      quote: 'The secret of getting ahead is getting started.',
+    });
+  }
+  return JSON.stringify({ error: 'No AI provider configured', hint: 'Check Ollama is running: ollama list' });
 }
 
+// ── Main export ───────────────────────────────────────────
 export async function callAI(prompt, parseJSON = false) {
   const provider = process.env.AI_PROVIDER || 'auto';
   let raw;
 
   try {
-    if (provider === 'claude' || (provider === 'auto' && process.env.ANTHROPIC_API_KEY)) {
+    if (provider === 'claude' && process.env.ANTHROPIC_API_KEY) {
       raw = await callClaude(prompt);
     } else if (provider === 'ollama') {
       raw = await callOllama(prompt);
     } else {
-      // auto: try Claude first, fallback Ollama, fallback mock
-      try {
-        raw = await callClaude(prompt);
-      } catch {
-        try {
-          raw = await callOllama(prompt);
-        } catch {
-          raw = mockResponse(prompt);
+      // auto: Claude first, then Ollama, then mock
+      if (process.env.ANTHROPIC_API_KEY) {
+        try { raw = await callClaude(prompt); }
+        catch (e) {
+          console.warn('[EVA] Claude failed, trying Ollama:', e.message);
+          try { raw = await callOllama(prompt); }
+          catch (e2) { console.warn('[EVA] Ollama failed:', e2.message); raw = mockResponse(prompt); }
         }
+      } else {
+        try { raw = await callOllama(prompt); }
+        catch (e) { console.warn('[EVA] Ollama failed:', e.message); raw = mockResponse(prompt); }
       }
     }
   } catch (err) {
-    console.error('AI call failed:', err.message);
+    console.error('[EVA] AI call failed:', err.message);
     raw = mockResponse(prompt);
   }
 
   if (!parseJSON) return raw;
 
-  // Strip markdown fences if present
-  const clean = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+  // Strip markdown fences
+  const clean = raw
+    .replace(/```json\n?/gi, '')
+    .replace(/```\n?/g, '')
+    .trim();
+
   try {
     return JSON.parse(clean);
   } catch {
-    // Try to extract JSON from text
-    const match = clean.match(/(\{[\s\S]*\}|\[[\s\S]*\])/);
+    // Try to extract JSON object or array from messy response
+    const objMatch = clean.match(/(\{[\s\S]*\})/);
+    const arrMatch = clean.match(/(\[[\s\S]*\])/);
+    const match = arrMatch || objMatch;
     if (match) {
       try { return JSON.parse(match[1]); } catch {}
     }
-    return { raw, error: 'JSON parse failed' };
+    console.error('[EVA] JSON parse failed. Raw:', clean.substring(0, 300));
+    return { raw: clean, error: 'JSON parse failed' };
   }
 }
