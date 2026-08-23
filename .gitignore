@@ -1,26 +1,14 @@
-# Dependencies
 node_modules/
-
-# Build output
 dist/
-
-# Environment — never commit real .env
 .env
-
-# Database and persistent data
 data/
 *.sqlite
 *.db
 *.db-shm
 *.db-wal
-
-# OS
 .DS_Store
 Thumbs.db
-
-# Logs
 *.log
 npm-debug.log*
-
-# Docker build artifacts
 release/
+voice/logs/

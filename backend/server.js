@@ -107,7 +107,7 @@ app.delete('/api/tasks/:id', (req, res) => {
 // ─── CONTENT ─────────────────────────────────────────────
 app.get('/api/content', (req, res) => {
   res.json(getDB().prepare('SELECT * FROM content ORDER BY created_at DESC').all()
-    .map(r => { let h; try { h = Array.isArray(r.hashtags) ? r.hashtags : JSON.parse(r.hashtags || '[]'); } catch { h = []; } return { ...r, hashtags: h }; });
+    .map(r => { let h; try { h = Array.isArray(r.hashtags) ? r.hashtags : JSON.parse(r.hashtags || '[]'); } catch { h = []; } return { ...r, hashtags: h }; }));
 });
 app.post('/api/content', (req, res) => {
   const { platform, angle, title, content, hashtags = [], cta, status = 'ready' } = req.body;

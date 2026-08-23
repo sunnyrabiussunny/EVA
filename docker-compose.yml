@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   backend:
     build: ./backend
@@ -8,7 +6,6 @@ services:
     ports:
       - "4000:4000"
     volumes:
-      # Persistent data — survives container restarts and rebuilds
       - eva_data:/app/data
     environment:
       - NODE_ENV=production
@@ -32,10 +29,11 @@ services:
       - "host.docker.internal:host-gateway"
 
 volumes:
-  # Named volume — knowledge files, SQLite DB, everything persists here
   eva_data:
     name: eva_persistent_data
+    external: true
 
 networks:
   default:
     name: eva-network
+    external: true
