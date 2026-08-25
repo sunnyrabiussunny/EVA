@@ -482,3 +482,354 @@ setTimeout(async () => {
 }, 8000);
 
 app.listen(4000, () => console.log('[EVA] Backend :4000'));
+
+// ─── METRICS ──────────────────────────────────────────────────────────────────
+app.get('/api/metrics', (req, res) => {
+  const { category } = req.query;
+  const db = getDB();
+  let rows = category
+    ? db.prepare('SELECT * FROM metrics WHERE category=? ORDER BY period_date DESC').all(category)
+    : db.prepare('SELECT * FROM metrics ORDER BY period_date DESC').all();
+
+  // Group by name for charting
+  const grouped = {};
+  for (const m of rows) {
+    if (!grouped[m.name]) grouped[m.name] = [];
+    grouped[m.name].push({ value: m.value, period: m.period, unit: m.unit, category: m.category, date: m.period_date });
+  }
+  const categories = [...new Set(rows.map(m => m.category))];
+  res.json({ metrics: rows.slice(0, 50), grouped, categories });
+});
+
+app.post('/api/metrics', (req, res) => {
+  const { name, category = 'finance', value, unit = '', period = '', period_date } = req.body;
+  const id = uuid(); const now = new Date().toISOString();
+  getDB().prepare('INSERT INTO metrics (id, name, category, value, unit, period, period_date, created_at) VALUES (?,?,?,?,?,?,?,?)')
+    .run(id, name, category, value, unit, period, period_date || null, now);
+  res.json({ id });
+});
+
+app.put('/api/metrics/:id', (req, res) => {
+  const { name, category, value, unit, period, period_date } = req.body;
+  getDB().prepare('UPDATE metrics SET name=COALESCE(?,name), category=COALESCE(?,category), value=COALESCE(?,value), unit=COALESCE(?,unit), period=COALESCE(?,period), period_date=COALESCE(?,period_date) WHERE id=?')
+    .run(name, category, value, unit, period, period_date, req.params.id);
+  res.json({ ok: true });
+});
+
+app.delete('/api/metrics/:id', (req, res) => {
+  getDB().prepare('DELETE FROM metrics WHERE id=?').run(req.params.id);
+  res.json({ ok: true });
+});
+
+// ─── STRATEGY SESSIONS ────────────────────────────────────────────────────────
+app.get('/api/strategy', (req, res) => {
+  const rows = getDB().prepare('SELECT * FROM strategy_sessions ORDER BY updated_at DESC LIMIT 20').all();
+  res.json(rows.map(r => ({ ...r, messages: JSON.parse(r.messages || '[]'), insights: JSON.parse(r.insights || '[]') })));
+});
+
+app.post('/api/strategy', (req, res) => {
+  const { title = 'New Strategy Session', context = '' } = req.body;
+  const id = uuid(); const now = new Date().toISOString();
+  getDB().prepare('INSERT INTO strategy_sessions (id, title, context, status, messages, insights, roi_total, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)')
+    .run(id, title, context, 'active', '[]', '[]', 0, now, now);
+  res.json({ id, title, context, status: 'active', messages: [], insights: [], roi_total: 0, created_at: now });
+});
+
+app.get('/api/strategy/:id', (req, res) => {
+  const row = getDB().prepare('SELECT * FROM strategy_sessions WHERE id=?').get(req.params.id);
+  if (!row) return res.status(404).json({ error: 'Not found' });
+  res.json({ ...row, messages: JSON.parse(row.messages || '[]'), insights: JSON.parse(row.insights || '[]') });
+});
+
+app.post('/api/strategy/:id/message', async (req, res) => {
+  const { message, model } = req.body;
+  const db = getDB();
+  const session = db.prepare('SELECT * FROM strategy_sessions WHERE id=?').get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Not found' });
+
+  const messages = JSON.parse(session.messages || '[]');
+  messages.push({ role: 'user', content: message });
+
+  const ollamaUrl = process.env.OLLAMA_URL || 'http://host.docker.internal:11434';
+  const ollamaModel = model || process.env.OLLAMA_MODEL || 'llama3.1:latest';
+
+  const system = `You are EVA's strategy consultant module. Run a structured consulting session to surface operational bottlenecks, quantify them in dollars, and produce actionable roadmaps.
+
+When the user describes a business situation:
+1. Ask targeted follow-up questions to understand the bottleneck fully
+2. Probe for: time wasted, frequency, departments involved, cost impact
+3. After 2-3 exchanges, identify specific AI/automation opportunities
+4. Always quantify: "~X hours/week lost = ~$Y/year"
+5. Suggest concrete fixes: RPA, workflow automation, AI agents, integrations
+
+Be direct, specific, and conversational. Ask one focused question at a time.`;
+
+  try {
+    const r = await fetch(`${ollamaUrl}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: ollamaModel, stream: false,
+        messages: [{ role: 'system', content: system }, ...messages],
+        options: { temperature: 0.7, num_predict: 800 },
+      }),
+    });
+    const data = await r.json();
+    const reply = data.message?.content || 'No response';
+    messages.push({ role: 'assistant', content: reply });
+    const now = new Date().toISOString();
+    db.prepare('UPDATE strategy_sessions SET messages=?, updated_at=? WHERE id=?')
+      .run(JSON.stringify(messages), now, req.params.id);
+    res.json({ reply, messages });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/strategy/:id/extract-insights', async (req, res) => {
+  const { model } = req.body;
+  const db = getDB();
+  const session = db.prepare('SELECT * FROM strategy_sessions WHERE id=?').get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Not found' });
+
+  const messages = JSON.parse(session.messages || '[]');
+  const ollamaUrl = process.env.OLLAMA_URL || 'http://host.docker.internal:11434';
+  const ollamaModel = model || process.env.OLLAMA_MODEL || 'llama3.1:latest';
+
+  const conversation = messages.map(m => `${m.role}: ${m.content}`).join('\n\n');
+  const prompt = `Based on this consulting session conversation, extract structured insights.\n\nCONVERSATION:\n${conversation}\n\nRespond ONLY with valid JSON:\n{"insights":[{"title":"...","description":"...","department":"...","priority":"high|medium|low","roi_estimate":150000,"hours_saved":260,"fix":"..."}],"roadmap":["Step 1...","Step 2..."],"roi_total":500000}`;
+
+  try {
+    const r = await fetch(`${ollamaUrl}/api/chat`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: ollamaModel, stream: false,
+        messages: [{ role: 'user', content: prompt }],
+        options: { temperature: 0.2, num_predict: 1200 },
+      }),
+    });
+    const data = await r.json();
+    const raw = (data.message?.content || '').replace(/```json|```/g, '').trim();
+    const match = raw.match(/\{[\s\S]*\}/);
+    const result = match ? JSON.parse(match[0]) : { insights: [], roadmap: [], roi_total: 0 };
+
+    // Save insights to nexus_insights table
+    const now = new Date().toISOString();
+    const insertInsight = db.prepare('INSERT INTO nexus_insights (id, title, description, department, priority, roi_estimate, hours_saved, status, session_id, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)');
+    for (const ins of (result.insights || [])) {
+      insertInsight.run(uuid(), ins.title, ins.description || '', ins.department || '', ins.priority || 'medium', ins.roi_estimate || 0, ins.hours_saved || 0, 'identified', session.id, now);
+    }
+
+    // Update session
+    db.prepare('UPDATE strategy_sessions SET insights=?, roi_total=?, updated_at=? WHERE id=?')
+      .run(JSON.stringify(result.insights || []), result.roi_total || 0, now, session.id);
+
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/strategy/:id', (req, res) => {
+  getDB().prepare('DELETE FROM strategy_sessions WHERE id=?').run(req.params.id);
+  res.json({ ok: true });
+});
+
+// ─── NEXUS INSIGHTS ────────────────────────────────────────────────────────────
+app.get('/api/nexus-insights', (req, res) => {
+  const { status, department } = req.query;
+  const db = getDB();
+  let q = 'SELECT * FROM nexus_insights WHERE 1=1';
+  const params = [];
+  if (status) { q += ' AND status=?'; params.push(status); }
+  if (department) { q += ' AND department=?'; params.push(department); }
+  q += ' ORDER BY roi_estimate DESC LIMIT 50';
+  const rows = db.prepare(q).all(...params);
+  const totalRoi = rows.reduce((s, r) => s + (r.roi_estimate || 0), 0);
+  const totalHours = rows.reduce((s, r) => s + (r.hours_saved || 0), 0);
+  res.json({ insights: rows, total_roi: totalRoi, total_hours: totalHours });
+});
+
+app.post('/api/nexus-insights', (req, res) => {
+  const { title, description = '', department = '', priority = 'medium', roi_estimate = 0, hours_saved = 0, status = 'identified', session_id } = req.body;
+  const id = uuid(); const now = new Date().toISOString();
+  getDB().prepare('INSERT INTO nexus_insights (id, title, description, department, priority, roi_estimate, hours_saved, status, session_id, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
+    .run(id, title, description, department, priority, roi_estimate, hours_saved, status, session_id || null, now);
+  res.json({ id });
+});
+
+app.put('/api/nexus-insights/:id', (req, res) => {
+  const { status, priority, roi_estimate, hours_saved } = req.body;
+  getDB().prepare('UPDATE nexus_insights SET status=COALESCE(?,status), priority=COALESCE(?,priority), roi_estimate=COALESCE(?,roi_estimate), hours_saved=COALESCE(?,hours_saved) WHERE id=?')
+    .run(status, priority, roi_estimate, hours_saved, req.params.id);
+  res.json({ ok: true });
+});
+
+app.delete('/api/nexus-insights/:id', (req, res) => {
+  getDB().prepare('DELETE FROM nexus_insights WHERE id=?').run(req.params.id);
+  res.json({ ok: true });
+});
+
+// ─── DOCUMENT CHAT ─────────────────────────────────────────────────────────────
+app.post('/api/chat/ask', async (req, res) => {
+  const { message, history = [], model, selectedKBFileIds } = req.body;
+  const db = getDB();
+  const ollamaUrl = process.env.OLLAMA_URL || 'http://host.docker.internal:11434';
+  const ollamaModel = model || process.env.OLLAMA_MODEL || 'llama3.1:latest';
+
+  // Load selected KB files
+  let kbFiles;
+  if (selectedKBFileIds?.length > 0) {
+    const placeholders = selectedKBFileIds.map(() => '?').join(',');
+    kbFiles = db.prepare(`SELECT original_name, content FROM knowledge_files WHERE id IN (${placeholders})`).all(...selectedKBFileIds);
+  } else {
+    kbFiles = db.prepare('SELECT original_name, content FROM knowledge_files ORDER BY created_at DESC LIMIT 6').all();
+  }
+
+  const contextParts = kbFiles.map(f => `Document: ${f.original_name}\n${(f.content || '').substring(0, 2000)}`);
+
+  const system = `You are EVA's document intelligence assistant. Answer questions based on the company documents provided. Be specific, cite document names when relevant, and focus on actionable insights.
+
+${contextParts.length > 0 ? `COMPANY DOCUMENTS:\n${contextParts.join('\n\n---\n\n')}` : 'No documents loaded. Ask the user to upload files to the Knowledge Base.'}`;
+
+  const messages = [...history.map(h => ({ role: h.role, content: h.content })), { role: 'user', content: message }];
+
+  try {
+    const r = await fetch(`${ollamaUrl}/api/chat`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: ollamaModel, stream: false,
+        messages: [{ role: 'system', content: system }, ...messages],
+        options: { temperature: 0.4, num_predict: 1000 },
+      }),
+    });
+    const data = await r.json();
+    res.json({ reply: data.message?.content || 'No response', model: ollamaModel });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── WATCH FOLDERS ─────────────────────────────────────────────────────────────
+const watchedFolders = {};
+
+app.get('/api/watch/folders', (req, res) => {
+  const rows = getDB().prepare('SELECT * FROM watch_folders ORDER BY created_at DESC').all();
+  res.json(rows.map(r => ({ ...r, running: !!watchedFolders[r.path] })));
+});
+
+app.post('/api/watch/folder', (req, res) => {
+  const { path: folderPath, label = '' } = req.body;
+  if (!folderPath) return res.status(400).json({ error: 'path required' });
+  const id = uuid(); const now = new Date().toISOString();
+  try {
+    getDB().prepare('INSERT OR IGNORE INTO watch_folders (id, path, label, active, created_at) VALUES (?,?,?,1,?)').run(id, folderPath, label || folderPath.split('/').pop(), now);
+    res.json({ ok: true, message: `Watching: ${folderPath}` });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete('/api/watch/folder/:id', (req, res) => {
+  const row = getDB().prepare('SELECT path FROM watch_folders WHERE id=?').get(req.params.id);
+  if (row) delete watchedFolders[row.path];
+  getDB().prepare('DELETE FROM watch_folders WHERE id=?').run(req.params.id);
+  res.json({ ok: true });
+});
+
+app.post('/api/watch/scan-now', async (req, res) => {
+  const folders = getDB().prepare('SELECT * FROM watch_folders WHERE active=1').all();
+  const db = getDB();
+  let newFiles = 0;
+  const { readFileSync, readdirSync, statSync, existsSync } = await import('fs');
+  const { join: pathJoin, extname } = await import('path');
+
+  const SUPPORTED = ['.pdf','.docx','.doc','.xlsx','.xls','.csv','.txt','.md','.json'];
+
+  for (const folder of folders) {
+    if (!existsSync(folder.path)) continue;
+    try {
+      const files = readdirSync(folder.path);
+      for (const file of files) {
+        const ext = extname(file).toLowerCase();
+        if (!SUPPORTED.includes(ext)) continue;
+        const fullPath = pathJoin(folder.path, file);
+        const stat = statSync(fullPath);
+        // Check if already imported
+        const exists = db.prepare('SELECT id FROM knowledge_files WHERE original_name=? AND size=?').get(file, stat.size);
+        if (exists) continue;
+        // Read text files
+        let content = '';
+        if (['.txt','.md','.csv','.json'].includes(ext)) {
+          try { content = readFileSync(fullPath, 'utf8'); } catch {}
+        } else {
+          content = `[Binary file: ${file} — ${(stat.size/1024).toFixed(1)}KB. Upload to Knowledge Base for AI extraction.]`;
+        }
+        const id = uuid(); const now = new Date().toISOString();
+        db.prepare('INSERT INTO knowledge_files (id, filename, original_name, content, size, tags, source, created_at) VALUES (?,?,?,?,?,?,?,?)')
+          .run(id, file, file, content, stat.size, '[]', `watch:${folder.path}`, now);
+        newFiles++;
+      }
+      db.prepare('UPDATE watch_folders SET last_scan=?, file_count=? WHERE id=?').run(new Date().toISOString(), files.length, folder.id);
+    } catch {}
+  }
+  res.json({ ok: true, new_files: newFiles, folders_scanned: folders.length });
+});
+
+// ─── DOCUMENT AUTO-CATEGORIZE ──────────────────────────────────────────────────
+app.post('/api/knowledge-files/:id/categorize', async (req, res) => {
+  const db = getDB();
+  const file = db.prepare('SELECT * FROM knowledge_files WHERE id=?').get(req.params.id);
+  if (!file) return res.status(404).json({ error: 'Not found' });
+
+  const ollamaUrl = process.env.OLLAMA_URL || 'http://host.docker.internal:11434';
+  const ollamaModel = process.env.OLLAMA_MODEL || 'llama3.1:latest';
+
+  const TAXONOMY = {
+    Finance: ['Financial Statements','Budgets','Forecasts','Tax','Invoices','Payroll','Audits'],
+    Legal: ['Contracts','Compliance','IP','Litigation','Regulations'],
+    Operations: ['Processes','Supply Chain','Logistics','Quality','SOPs'],
+    HR: ['Recruitment','Performance','Policies','Training','Benefits'],
+    'Sales & Marketing': ['Proposals','CRM Data','Campaigns','Market Research','Pricing'],
+    Technology: ['Architecture','Security','Development','Infrastructure','Data'],
+    Strategy: ['Business Plans','Due Diligence','M&A','Investor Relations','Competitive Analysis'],
+    Correspondence: ['Emails','Meeting Notes','Reports','Memos','Presentations'],
+  };
+
+  const taxonomyStr = Object.entries(TAXONOMY).map(([k,v]) => `  ${k}: ${v.join(', ')}`).join('\n');
+  const excerpt = (file.content || '').split(' ').slice(0, 600).join(' ');
+
+  const prompt = `Classify this document. TAXONOMY:\n${taxonomyStr}\n\nFILENAME: ${file.original_name}\nEXCERPT: ${excerpt}\n\nRespond ONLY with JSON: {"category":"Finance","subcategory":"Budgets","confidence":0.9,"summary":"One sentence","tags":["tag1","tag2","tag3"]}`;
+
+  try {
+    const r = await fetch(`${ollamaUrl}/api/chat`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: ollamaModel, stream: false,
+        messages: [{ role: 'user', content: prompt }],
+        options: { temperature: 0.1, num_predict: 200 },
+      }),
+    });
+    const data = await r.json();
+    const raw = (data.message?.content || '').replace(/```json|```/g,'').trim();
+    const match = raw.match(/\{[\s\S]*\}/);
+    const result = match ? JSON.parse(match[0]) : { category:'Uncategorized', subcategory:'General', confidence:0, summary:'', tags:[] };
+
+    db.prepare('UPDATE knowledge_files SET tags=? WHERE id=?').run(JSON.stringify(result.tags || []), file.id);
+    res.json({ ...result, id: file.id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/knowledge-files/categorize-all', async (req, res) => {
+  res.json({ ok: true, message: 'Categorization started in background' });
+  const db = getDB();
+  const files = db.prepare("SELECT * FROM knowledge_files WHERE tags='[]' OR tags IS NULL LIMIT 20").all();
+  for (const file of files) {
+    try {
+      await fetch(`http://localhost:4000/api/knowledge-files/${file.id}/categorize`, { method: 'POST' });
+      await new Promise(r => setTimeout(r, 1000));
+    } catch {}
+  }
+});

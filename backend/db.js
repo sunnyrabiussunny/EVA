@@ -104,6 +104,49 @@ export function initDB() {
       created_at TEXT
     );
 
+
+    CREATE TABLE IF NOT EXISTS metrics (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      category TEXT DEFAULT 'finance',
+      value REAL DEFAULT 0,
+      unit TEXT DEFAULT '',
+      period TEXT DEFAULT '',
+      period_date TEXT,
+      created_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS strategy_sessions (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      context TEXT DEFAULT '',
+      status TEXT DEFAULT 'active',
+      messages TEXT DEFAULT '[]',
+      insights TEXT DEFAULT '[]',
+      roi_total REAL DEFAULT 0,
+      created_at TEXT,
+      updated_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS nexus_insights (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      department TEXT DEFAULT '',
+      priority TEXT DEFAULT 'medium',
+      roi_estimate REAL DEFAULT 0,
+      hours_saved REAL DEFAULT 0,
+      status TEXT DEFAULT 'identified',
+      session_id TEXT,
+      created_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS watch_folders (
+      id TEXT PRIMARY KEY,
+      path TEXT NOT NULL UNIQUE,
+      label TEXT DEFAULT '',
+      active INTEGER DEFAULT 1,
+      last_scan TEXT,
+      file_count INTEGER DEFAULT 0,
+      created_at TEXT
+    );
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
       value TEXT
@@ -144,3 +187,4 @@ export function initDB() {
 
 export function getDB()       { return db; }
 export function getFilesDir() { return FILES_DIR; }
+
