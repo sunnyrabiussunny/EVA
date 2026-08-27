@@ -404,6 +404,64 @@ function KBFileManager({ kbFiles, onRefresh, onDelete, onUpload, uploading }) {
   );
 }
 
+// ─── AVAILABLE CHARTS CONFIG ──────────────────────────────
+const CHART_OPTIONS = [
+  { key:'revenue',     label:'Revenue Trend',   color:'#00f5d4', icon:'📈' },
+  { key:'pipeline',    label:'Sales Pipeline',  color:'#6c63ff', icon:'🎯' },
+  { key:'departments', label:'Dept Budgets',    color:'#f59e0b', icon:'📊' },
+  { key:'cashflow',    label:'Cash Flow',       color:'#f15bb5', icon:'💸' },
+  { key:'radar',       label:'KPI Radar',       color:'#22c55e', icon:'⬡'  },
+];
+
+// ─── CHART CARD WITH SWITCHER ─────────────────────────────
+function ChartCardWithSwitcher({ type, label, C, delay, onSwitch }) {
+  const [showSwitcher, setShowSwitcher] = useState(false);
+  return (
+    <div className="card chart-card" style={{ animationDelay:`${delay}s`, opacity:0, position:'relative' }}>
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12 }}>
+        <div style={{ fontSize:11, color:'var(--text3)', letterSpacing:2, textTransform:'uppercase' }}>
+          <span style={{color:'var(--teal)',marginRight:6}}>◈</span>{label}
+        </div>
+        <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+          <span style={{ fontSize:10, color:'var(--text3)', fontFamily:'var(--mono)', background:'var(--bg3)', padding:'2px 6px', borderRadius:4 }}>
+            visual · sample shape
+          </span>
+          <button
+            onClick={() => setShowSwitcher(s => !s)}
+            style={{ fontSize:10, color:'var(--teal)', background:'var(--teal-bg)', border:'1px solid var(--teal-border)', borderRadius:4, padding:'2px 8px', cursor:'pointer', fontFamily:'inherit' }}
+          >
+            swap ⇄
+          </button>
+        </div>
+      </div>
+
+      {/* Chart switcher dropdown */}
+      {showSwitcher && (
+        <div style={{ position:'absolute', top:42, right:16, zIndex:50, background:'var(--bg2)', border:'1px solid var(--border)', borderRadius:'var(--radius)', padding:8, boxShadow:'0 8px 32px rgba(0,0,0,.5)', display:'flex', flexDirection:'column', gap:4, minWidth:160 }}>
+          <div style={{ fontSize:10, color:'var(--text3)', textTransform:'uppercase', letterSpacing:1, marginBottom:4, padding:'0 4px' }}>Switch to</div>
+          {CHART_OPTIONS.filter(o => o.key !== type).map(o => (
+            <button key={o.key} onClick={() => { onSwitch(o.key); setShowSwitcher(false); }} style={{
+              display:'flex', alignItems:'center', gap:8,
+              background:'transparent', border:'none', borderRadius:'var(--radius-sm)',
+              padding:'6px 8px', cursor:'pointer', fontFamily:'inherit',
+              color:'var(--text2)', fontSize:12, textAlign:'left',
+              transition:'all .1s',
+            }}
+              onMouseEnter={e => { e.currentTarget.style.background='var(--bg3)'; e.currentTarget.style.color='var(--text)'; }}
+              onMouseLeave={e => { e.currentTarget.style.background='transparent'; e.currentTarget.style.color='var(--text2)'; }}
+            >
+              <span style={{ width:8, height:8, borderRadius:'50%', background:o.color, flexShrink:0 }}/>
+              {o.icon} {o.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <C/>
+    </div>
+  );
+}
+
 // ─── MAIN BOARDROOM ────────────────────────────────────────
 export function Boardroom() {
   const [robotState,          setRobotState]          = useState('idle');
@@ -425,6 +483,14 @@ export function Boardroom() {
   const [aiModels,            setAiModels]            = useState([]);
   const recogRef = useRef(null);
   const txFileRef = useRef(null);
+
+  // Auto-load overview on first mount
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      doAsk('Give me a full executive overview with all charts — revenue, pipeline, departments, cash flow, and KPI scorecard');
+    }, 1200);
+    return () => clearTimeout(timer);
+  }, []);
 
   const loadKBFiles = async () => {
     try {
@@ -683,6 +749,29 @@ export function Boardroom() {
           ))}
         </div>
 
+        {/* Available charts */}
+        <div style={{ padding:'8px 14px', borderBottom:'1px solid var(--border)' }}>
+          <div style={{ fontSize:10, color:'var(--text3)', textTransform:'uppercase', letterSpacing:2, marginBottom:8 }}>Generate Charts</div>
+          <div style={{ display:'flex', flexDirection:'column', gap:3 }}>
+            {CHART_OPTIONS.map(o => (
+              <button key={o.key} onClick={() => doAsk(`Show me the ${o.label} dashboard`)} disabled={robotState==='thinking'}
+                style={{
+                  display:'flex', alignItems:'center', gap:8,
+                  background:'none', border:'1px solid var(--border)',
+                  borderRadius:'var(--radius-sm)', padding:'5px 9px',
+                  cursor:'pointer', fontFamily:'inherit', transition:'all .15s',
+                  color:'var(--text2)', fontSize:11,
+                }}
+                onMouseEnter={e => { e.currentTarget.style.borderColor=o.color; e.currentTarget.style.color='var(--text)'; }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor='var(--border)'; e.currentTarget.style.color='var(--text2)'; }}
+              >
+                <span style={{ width:7, height:7, borderRadius:'50%', background:o.color, flexShrink:0 }}/>
+                {o.icon} {o.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
         {/* Session log */}
         <div style={{ flex:1, overflow:'auto', padding:'8px 14px' }}>
           <div style={{ fontSize:10, color:'var(--text3)', textTransform:'uppercase', letterSpacing:2, marginBottom:7 }}>Session Log</div>
@@ -699,17 +788,9 @@ export function Boardroom() {
       {/* ── REPORT AREA ── */}
       <div className="boardroom-main">
         {!report && robotState==='idle' && (
-          <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'80vh', gap:18 }}>
-            <div style={{ fontSize:60, opacity:.07 }}>⬡</div>
-            <div style={{ color:'var(--text3)', fontSize:16, textAlign:'center', lineHeight:2.2 }}>
-              E.V.A. Boardroom is ready<br/>
-              <span style={{ fontSize:14 }}>Ask a question to generate a live intelligence report</span><br/>
-              <span style={{ fontSize:12, fontFamily:'var(--mono)', color:'var(--text3)' }}>
-                {kbFiles.length > 0
-                  ? `✓ ${selectedSources.length}/${kbFiles.length} knowledge sources selected`
-                  : '⬡ Upload the demo data .md file to get started'}
-              </span>
-            </div>
+          <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'80vh', gap:14 }}>
+            <div style={{ width:48, height:48, borderRadius:'50%', border:'2.5px solid transparent', borderTop:'2.5px solid var(--teal)', borderRight:'2.5px solid rgba(0,245,212,.2)', animation:'spin 1s linear infinite' }}/>
+            <div style={{ color:'var(--text3)', fontSize:14, textAlign:'center' }}>Loading boardroom overview...</div>
           </div>
         )}
 
@@ -764,17 +845,11 @@ export function Boardroom() {
                 const item=CHARTS[type]; if(!item) return null;
                 const {label,C}=item;
                 return (
-                  <div key={type} className="card chart-card" style={{ animationDelay:`${i*.12}s`, opacity:0 }}>
-                    <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12 }}>
-                      <div style={{ fontSize:11, color:'var(--text3)', letterSpacing:2, textTransform:'uppercase' }}>
-                        <span style={{color:'var(--teal)',marginRight:6}}>◈</span>{label}
-                      </div>
-                      <span style={{ fontSize:10, color:'var(--text3)', fontFamily:'var(--mono)', background:'var(--bg3)', padding:'2px 6px', borderRadius:4 }}>
-                        visual · sample shape
-                      </span>
-                    </div>
-                    <C/>
-                  </div>
+                  <ChartCardWithSwitcher key={type} type={type} label={label} C={C} delay={i*.12}
+                    onSwitch={(newType) => {
+                      setReport(r => ({ ...r, charts: r.charts.map((c,ci) => ci===i ? newType : c) }));
+                    }}
+                  />
                 );
               })}
             </div>
