@@ -833,3 +833,358 @@ app.post('/api/knowledge-files/categorize-all', async (req, res) => {
     } catch {}
   }
 });
+
+// ─── BOARD ────────────────────────────────────────────────────────────────────
+function boardBoxWithItems(db, id) {
+  const box = db.prepare('SELECT * FROM board_boxes WHERE id=?').get(id);
+  if (!box) return null;
+  box.items = db.prepare('SELECT * FROM board_items WHERE box_id=? ORDER BY sort_order ASC, created_at ASC').all(id);
+  return box;
+}
+
+app.get('/api/board/boxes', (req, res) => {
+  const db = getDB();
+  const boxes = db.prepare('SELECT * FROM board_boxes ORDER BY z_index ASC, created_at ASC').all();
+  const result = boxes.map(b => ({
+    ...b,
+    items: db.prepare('SELECT * FROM board_items WHERE box_id=? ORDER BY sort_order ASC').all(b.id),
+  }));
+  res.json(result);
+});
+
+app.post('/api/board/boxes', (req, res) => {
+  const { title='New Box', color='#00f5d4', x=24, y=24, w=280, h=240 } = req.body;
+  const db = getDB();
+  const id = uuid(); const now = new Date().toISOString();
+  const maxZ = db.prepare('SELECT MAX(z_index) as m FROM board_boxes').get()?.m || 0;
+  db.prepare('INSERT INTO board_boxes (id, title, color, x, y, w, h, z_index, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+    .run(id, title, color, x, y, w, h, maxZ+1, now);
+  res.json(boardBoxWithItems(db, id));
+});
+
+app.put('/api/board/boxes/:id', (req, res) => {
+  const { title, color, x, y, w, h, z_index } = req.body;
+  getDB().prepare('UPDATE board_boxes SET title=COALESCE(?,title), color=COALESCE(?,color), x=COALESCE(?,x), y=COALESCE(?,y), w=COALESCE(?,w), h=COALESCE(?,h), z_index=COALESCE(?,z_index) WHERE id=?')
+    .run(title??null, color??null, x??null, y??null, w??null, h??null, z_index??null, req.params.id);
+  res.json({ ok:true });
+});
+
+app.post('/api/board/boxes/:id/bring-front', (req, res) => {
+  const db = getDB();
+  const maxZ = db.prepare('SELECT MAX(z_index) as m FROM board_boxes').get()?.m || 0;
+  db.prepare('UPDATE board_boxes SET z_index=? WHERE id=?').run(maxZ+1, req.params.id);
+  res.json({ ok:true });
+});
+
+app.delete('/api/board/boxes/:id', (req, res) => {
+  getDB().prepare('DELETE FROM board_boxes WHERE id=?').run(req.params.id);
+  res.json({ ok:true });
+});
+
+// Board items
+app.post('/api/board/boxes/:id/items', (req, res) => {
+  const { text, sort_order=0 } = req.body;
+  const db = getDB();
+  const id = uuid(); const now = new Date().toISOString();
+  db.prepare('INSERT INTO board_items (id, box_id, text, done, sort_order, created_at) VALUES (?,?,?,0,?,?)')
+    .run(id, req.params.id, text, sort_order, now);
+  res.json({ id, box_id: req.params.id, text, done:0, sort_order, created_at: now });
+});
+
+app.put('/api/board/items/:id', (req, res) => {
+  const { text, done, sort_order } = req.body;
+  getDB().prepare('UPDATE board_items SET text=COALESCE(?,text), done=COALESCE(?,done), sort_order=COALESCE(?,sort_order) WHERE id=?')
+    .run(text??null, done??null, sort_order??null, req.params.id);
+  res.json({ ok:true });
+});
+
+app.delete('/api/board/items/:id', (req, res) => {
+  getDB().prepare('DELETE FROM board_items WHERE id=?').run(req.params.id);
+  res.json({ ok:true });
+});
+
+// AI: summarize board content
+app.post('/api/board/summarize', async (req, res) => {
+  const db = getDB();
+  const boxes = db.prepare('SELECT * FROM board_boxes').all().map(b => ({
+    ...b,
+    items: db.prepare('SELECT * FROM board_items WHERE box_id=?').all(b.id),
+  }));
+
+  const boardText = boxes.map(b => {
+    const items = b.items.map(i => `  ${i.done?'[x]':'[ ]'} ${i.text}`).join('\n');
+    return `## ${b.title}\n${items || '  (empty)'}`;
+  }).join('\n\n');
+
+  const ollamaUrl = process.env.OLLAMA_URL || 'http://host.docker.internal:11434';
+  const model = process.env.OLLAMA_MODEL || 'llama3.1:latest';
+
+  const prompt = `Analyze this board and give a sharp executive summary.\n\nBOARD CONTENT:\n${boardText}\n\nRespond as JSON:\n{"summary":"2-3 sentences overall","boxes":[{"title":"box title","insight":"one sentence","completion":"X/Y done","priority":"high|medium|low"}],"next_actions":["action 1","action 2","action 3"]}`;
+
+  try {
+    const r = await fetch(`${ollamaUrl}/api/chat`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ model, stream:false, messages:[{role:'user',content:prompt}], options:{temperature:0.3,num_predict:600} }),
+    });
+    const data = await r.json();
+    const raw = (data.message?.content||'').replace(/```json|```/g,'').trim();
+    const match = raw.match(/\{[\s\S]*\}/);
+    res.json(match ? JSON.parse(match[0]) : { summary: raw, boxes:[], next_actions:[] });
+  } catch(err) { res.status(500).json({ error: err.message }); }
+});
+
+// AI: create board from text/context
+app.post('/api/board/ai-create', async (req, res) => {
+  const { prompt: userPrompt, clear = false } = req.body;
+  const db = getDB();
+  const ollamaUrl = process.env.OLLAMA_URL || 'http://host.docker.internal:11434';
+  const model = process.env.OLLAMA_MODEL || 'llama3.1:latest';
+
+  // Load KB context
+  const kbFiles = db.prepare('SELECT original_name, content FROM knowledge_files ORDER BY created_at DESC LIMIT 3').all();
+  const kbText = kbFiles.map(f => `${f.original_name}:\n${(f.content||'').substring(0,600)}`).join('\n\n');
+
+  const systemPrompt = `You are an executive board planner. Create a structured board with boxes and checklist items based on the user's request.
+${kbText ? `\nContext from knowledge base:\n${kbText}` : ''}
+
+Respond ONLY with valid JSON:
+{
+  "boxes": [
+    {
+      "title": "Box Title",
+      "color": "#00f5d4",
+      "items": ["Item 1", "Item 2", "Item 3"]
+    }
+  ]
+}
+
+Use these colors: #00f5d4 (teal), #6c63ff (purple), #f59e0b (amber), #f15bb5 (pink), #22c55e (green), #3b82f6 (blue), #ef4444 (red).
+Create 3-6 boxes with 3-7 items each. Be specific and actionable.`;
+
+  try {
+    const r = await fetch(`${ollamaUrl}/api/chat`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ model, stream:false, messages:[{role:'system',content:systemPrompt},{role:'user',content:userPrompt}], options:{temperature:0.4,num_predict:1200} }),
+    });
+    const data = await r.json();
+    const raw = (data.message?.content||'').replace(/```json|```/g,'').trim();
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (!match) return res.status(500).json({ error: 'AI did not return valid JSON' });
+    const result = JSON.parse(match[0]);
+
+    // Clear existing board if requested
+    if (clear) {
+      db.prepare('DELETE FROM board_items').run();
+      db.prepare('DELETE FROM board_boxes').run();
+    }
+
+    // Create boxes and items
+    const COLS = 3;
+    const now = new Date().toISOString();
+    const created = [];
+    (result.boxes||[]).forEach((box, i) => {
+      const id = uuid();
+      const col = i % COLS;
+      const row = Math.floor(i / COLS);
+      db.prepare('INSERT INTO board_boxes (id, title, color, x, y, w, h, z_index, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+        .run(id, box.title, box.color || '#00f5d4', 24 + col*300, 24 + row*260, 280, 240, i+1, now);
+      (box.items||[]).forEach((text, j) => {
+        db.prepare('INSERT INTO board_items (id, box_id, text, done, sort_order, created_at) VALUES (?,?,?,0,?,?)')
+          .run(uuid(), id, text, j, now);
+      });
+      created.push({ id, title: box.title, itemCount: (box.items||[]).length });
+    });
+
+    res.json({ ok:true, created, boxCount: created.length });
+  } catch(err) { res.status(500).json({ error: err.message }); }
+});
+
+// ─── AUTOMATION PLANNER (n8n integration) ─────────────────────────────────────
+app.post('/api/automation/audit', async (req, res) => {
+  const db = getDB();
+  const ollamaUrl = process.env.OLLAMA_URL || 'http://host.docker.internal:11434';
+  const model = process.env.OLLAMA_MODEL || 'llama3.1:latest';
+
+  // Pull context from EVA
+  const projects  = db.prepare('SELECT title, description, status FROM projects LIMIT 10').all();
+  const tasks     = db.prepare("SELECT title, status, priority FROM tasks LIMIT 20").all();
+  const ideas     = db.prepare('SELECT title, body FROM ideas LIMIT 10').all();
+  const kbFiles   = db.prepare('SELECT original_name FROM knowledge_files LIMIT 10').all();
+  const sessions  = db.prepare('SELECT title, context FROM strategy_sessions LIMIT 5').all();
+
+  const context = `PROJECTS: ${JSON.stringify(projects)}\nTASKS: ${JSON.stringify(tasks)}\nIDEAS: ${JSON.stringify(ideas)}\nKB FILES: ${JSON.stringify(kbFiles)}\nSTRATEGY SESSIONS: ${JSON.stringify(sessions)}`;
+
+  const prompt = `You are an automation consultant. Analyze this executive's work and identify the 5 best recurring workflows to automate with n8n.
+
+CONTEXT:
+${context}
+
+For each workflow, provide specific n8n implementation details.
+
+Respond ONLY as JSON:
+{
+  "workflows": [
+    {
+      "title": "Workflow name",
+      "description": "What it does",
+      "trigger": "What triggers it (schedule/webhook/email/etc)",
+      "steps": ["Step 1", "Step 2", "Step 3"],
+      "n8n_nodes": ["n8n node names to use"],
+      "time_saved": "X hours/week",
+      "priority": "high|medium|low",
+      "complexity": "simple|medium|complex"
+    }
+  ],
+  "summary": "Overall automation opportunity summary"
+}`;
+
+  try {
+    const r = await fetch(`${ollamaUrl}/api/chat`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ model, stream:false, messages:[{role:'user',content:prompt}], options:{temperature:0.3,num_predict:1500} }),
+    });
+    const data = await r.json();
+    const raw = (data.message?.content||'').replace(/```json|```/g,'').trim();
+    const match = raw.match(/\{[\s\S]*\}/);
+    res.json(match ? JSON.parse(match[0]) : { error:'parse failed', raw });
+  } catch(err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/automation/build-n8n', async (req, res) => {
+  const { workflow } = req.body;
+  const N8N_URL = process.env.N8N_URL || 'http://host.docker.internal:5678';
+
+  // Generate n8n workflow JSON
+  const ollamaUrl = process.env.OLLAMA_URL || 'http://host.docker.internal:11434';
+  const model = process.env.OLLAMA_MODEL || 'llama3.1:latest';
+
+  const prompt = `Generate a valid n8n workflow JSON for this automation:
+Title: ${workflow.title}
+Description: ${workflow.description}
+Trigger: ${workflow.trigger}
+Steps: ${workflow.steps.join(', ')}
+n8n nodes to use: ${(workflow.n8n_nodes||[]).join(', ')}
+
+Return ONLY a valid n8n workflow JSON object that can be imported directly into n8n.
+The JSON must have: name, nodes, connections, settings fields.
+Keep it simple and working.`;
+
+  try {
+    const r = await fetch(`${ollamaUrl}/api/chat`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ model, stream:false, messages:[{role:'user',content:prompt}], options:{temperature:0.2,num_predict:2000} }),
+    });
+    const data = await r.json();
+    const raw = (data.message?.content||'').replace(/```json|```/g,'').trim();
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (!match) return res.json({ ok:false, error:'Could not generate workflow JSON', n8nUrl: N8N_URL });
+
+    const workflowJson = JSON.parse(match[0]);
+
+    // Try to push to n8n
+    try {
+      const n8nRes = await fetch(`${N8N_URL}/api/v1/workflows`, {
+        method:'POST',
+        headers:{'Content-Type':'application/json', 'X-N8N-API-KEY': process.env.N8N_API_KEY||''},
+        body: JSON.stringify(workflowJson),
+      });
+      if (n8nRes.ok) {
+        const n8nData = await n8nRes.json();
+        return res.json({ ok:true, n8nId: n8nData.id, n8nUrl:`${N8N_URL}/workflow/${n8nData.id}`, workflow: workflowJson });
+      }
+    } catch {}
+
+    // n8n not reachable — return JSON for manual import
+    res.json({ ok:false, manual:true, workflow: workflowJson, n8nUrl: N8N_URL, message:'n8n not reachable — use the JSON to import manually' });
+  } catch(err) { res.status(500).json({ error: err.message }); }
+});
+
+// ─── ADVISOR / CHIEF OF STAFF ──────────────────────────────────────────────────
+app.post('/api/advisor/ask', async (req, res) => {
+  const { question, mode='advisor', history=[] } = req.body;
+  const db = getDB();
+  const ollamaUrl = process.env.OLLAMA_URL || 'http://host.docker.internal:11434';
+  const model = process.env.OLLAMA_MODEL || 'llama3.1:latest';
+
+  const projects = db.prepare("SELECT title, status, priority, progress, notes FROM projects WHERE status='active' LIMIT 8").all();
+  const tasks    = db.prepare("SELECT title, status, priority FROM tasks WHERE status!='done' LIMIT 15").all();
+  const insights = db.prepare('SELECT title, body FROM nexus_insights ORDER BY roi_estimate DESC LIMIT 5').all();
+  const kbFiles  = db.prepare('SELECT original_name, content FROM knowledge_files ORDER BY created_at DESC LIMIT 3').all();
+  const kbContext = kbFiles.map(f=>`${f.original_name}: ${(f.content||'').substring(0,500)}`).join('\n\n');
+
+  const PERSONAS = {
+    advisor: `You are the user's personal AI advisor — brutally honest, strategic, and direct. You help with life, career, and business decisions. You have full context of their work.`,
+    chief_of_staff: `You are the user's AI Chief of Staff. You manage priorities, surface open loops, and ensure nothing important falls through the cracks. Be proactive and action-oriented.`,
+  };
+
+  const system = `${PERSONAS[mode]||PERSONAS.advisor}
+
+CURRENT CONTEXT:
+Active Projects: ${JSON.stringify(projects)}
+Open Tasks: ${JSON.stringify(tasks)}
+Top Insights: ${JSON.stringify(insights)}
+${kbContext ? `Knowledge Base:\n${kbContext}` : ''}
+
+Be specific, reference their actual data, and give concrete recommendations.`;
+
+  const messages = [...history.map(h=>({role:h.role,content:h.content})), {role:'user',content:question}];
+
+  try {
+    const r = await fetch(`${ollamaUrl}/api/chat`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ model, stream:false, messages:[{role:'system',content:system},...messages], options:{temperature:0.6,num_predict:1000} }),
+    });
+    const data = await r.json();
+    res.json({ reply: data.message?.content || 'No response', mode });
+  } catch(err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/advisor/monthly-checkin', async (req, res) => {
+  const db = getDB();
+  const ollamaUrl = process.env.OLLAMA_URL || 'http://host.docker.internal:11434';
+  const model = process.env.OLLAMA_MODEL || 'llama3.1:latest';
+
+  const projects = db.prepare('SELECT * FROM projects LIMIT 10').all();
+  const tasks    = db.prepare('SELECT * FROM tasks LIMIT 20').all();
+  const metrics  = db.prepare('SELECT * FROM metrics ORDER BY created_at DESC LIMIT 20').all();
+  const ideas    = db.prepare('SELECT title, category FROM ideas ORDER BY created_at DESC LIMIT 10').all();
+  const insights = db.prepare('SELECT * FROM nexus_insights LIMIT 10').all();
+
+  const prompt = `Generate a comprehensive monthly check-in report for this executive.
+
+DATA:
+Projects: ${JSON.stringify(projects)}
+Tasks: ${JSON.stringify(tasks)}
+Metrics: ${JSON.stringify(metrics)}
+Ideas: ${JSON.stringify(ideas)}
+Insights: ${JSON.stringify(insights)}
+
+Respond as JSON:
+{
+  "month": "Month Year",
+  "headline": "One sentence summary of the month",
+  "wins": ["Win 1", "Win 2", "Win 3"],
+  "concerns": ["Concern 1", "Concern 2"],
+  "metrics_review": "How metrics trended",
+  "decisions_needed": ["Decision 1", "Decision 2"],
+  "next_month_priorities": ["Priority 1", "Priority 2", "Priority 3"],
+  "advisor_note": "Personal note from your AI advisor — honest assessment"
+}`;
+
+  try {
+    const r = await fetch(`${ollamaUrl}/api/chat`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ model, stream:false, messages:[{role:'user',content:prompt}], options:{temperature:0.4,num_predict:1200} }),
+    });
+    const data = await r.json();
+    const raw = (data.message?.content||'').replace(/```json|```/g,'').trim();
+    const match = raw.match(/\{[\s\S]*\}/);
+
+    const result = match ? JSON.parse(match[0]) : { error:'parse failed' };
+    // Save to briefs table
+    if (result.headline) {
+      db.prepare('INSERT INTO briefs (id, date, content, created_at) VALUES (?,?,?,?)').run(uuid(), new Date().toISOString().split('T')[0]+'-monthly', JSON.stringify(result), new Date().toISOString());
+    }
+    res.json(result);
+  } catch(err) { res.status(500).json({ error: err.message }); }
+});

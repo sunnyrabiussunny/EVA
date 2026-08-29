@@ -147,6 +147,26 @@ export function initDB() {
       file_count INTEGER DEFAULT 0,
       created_at TEXT
     );
+    CREATE TABLE IF NOT EXISTS board_boxes (
+      id TEXT PRIMARY KEY,
+      title TEXT DEFAULT 'New Box',
+      color TEXT DEFAULT '#00f5d4',
+      x REAL DEFAULT 24,
+      y REAL DEFAULT 24,
+      w REAL DEFAULT 280,
+      h REAL DEFAULT 240,
+      z_index INTEGER DEFAULT 1,
+      created_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS board_items (
+      id TEXT PRIMARY KEY,
+      box_id TEXT NOT NULL,
+      text TEXT NOT NULL,
+      done INTEGER DEFAULT 0,
+      sort_order INTEGER DEFAULT 0,
+      created_at TEXT,
+      FOREIGN KEY (box_id) REFERENCES board_boxes(id) ON DELETE CASCADE
+    );
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
       value TEXT
