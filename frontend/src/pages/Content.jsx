@@ -115,9 +115,23 @@ export function Content({ toast }) {
   const generate = async (opts) => {
     setLoading(true);
     try {
-      await api.post('/content/generate', opts);
-      toast('Content generated!');
-      load();
+      const result = await api.post('/content/generate', opts);
+      if (result && result.title) {
+        // Save the generated content
+        await api.post('/content', {
+          platform: opts.platform || 'LinkedIn',
+          angle:    opts.angle   || '',
+          title:    result.title,
+          content:  result.content,
+          hashtags: result.hashtags || [],
+          cta:      result.cta     || '',
+          status:   'ready',
+        });
+        toast('Content generated and saved!');
+        load();
+      } else {
+        toast('AI returned empty response', 'error');
+      }
     } catch (e) {
       toast('Generation failed — check AI provider in Settings', 'error');
     } finally { setLoading(false); }
