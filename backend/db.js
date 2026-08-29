@@ -190,6 +190,14 @@ export function initDB() {
     // insights
     { table:'insights', col:'type',     def:"TEXT DEFAULT 'action'" },
     { table:'insights', col:'priority', def:"TEXT DEFAULT 'medium'" },
+    // ideas
+    { table:'ideas', col:'body',     def:"TEXT DEFAULT ''" },
+    { table:'ideas', col:'expanded', def:'TEXT' },
+    { table:'ideas', col:'category', def:"TEXT DEFAULT 'general'" },
+    // nexus_insights
+    { table:'nexus_insights', col:'body', def:"TEXT DEFAULT ''" },
+    // tasks
+    { table:'tasks', col:'notes', def:"TEXT DEFAULT ''" },
   ];
 
   for (const m of migrations) {
